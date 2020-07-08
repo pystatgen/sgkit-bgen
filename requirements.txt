@@ -1,0 +1,7 @@
+dask[array]
+dask[dataframe]
+fsspec
+numpy
+xarray
+bgen_reader
+git+https://github.com/tomwhite/sgkit@dosages
