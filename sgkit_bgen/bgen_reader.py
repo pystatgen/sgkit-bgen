@@ -12,6 +12,7 @@ from bgen_reader._samples import generate_samples, read_samples_file
 from xarray import Dataset
 
 from sgkit import create_genotype_dosage_dataset
+from sgkit.utils import encode_array
 
 PathType = Union[str, Path]
 
@@ -88,9 +89,11 @@ class BgenReader:
 
     def __getitem__(self, idx):
         if not isinstance(idx, tuple):
-            raise IndexError(f"Indexer must be tuple (received {type(idx)})")
+            raise IndexError(  # pragma: no cover
+                f"Indexer must be tuple (received {type(idx)})"
+            )
         if len(idx) != self.ndim:
-            raise IndexError(
+            raise IndexError(  # pragma: no cover
                 f"Indexer must be two-item tuple (received {len(idx)} slices)"
             )
 
@@ -138,9 +141,9 @@ def read_bgen(
     path : PathType
         Path to BGEN file.
     chunks : Union[str, int, tuple], optional
-        Chunk size for genotype (i.e. `.bed`) data, by default "auto"
+        Chunk size for genotype data, by default "auto"
     lock : bool, optional
-        Whether or not to synchronize concurrent reads of `.bed`
+        Whether or not to synchronize concurrent reads of
         file blocks, by default False. This is passed through to
         [dask.array.from_array](https://docs.dask.org/en/latest/array-api.html#dask.array.from_array).
     persist : bool, optional
@@ -152,9 +155,7 @@ def read_bgen(
 
     bgen_reader = BgenReader(path, persist)
 
-    variant_contig_names, variant_contig = np.unique(
-        np.array(bgen_reader.contig, dtype=str), return_inverse=True
-    )
+    variant_contig, variant_contig_names = encode_array(bgen_reader.contig.compute())
     variant_contig_names = list(variant_contig_names)
     variant_contig = variant_contig.astype("int16")
 

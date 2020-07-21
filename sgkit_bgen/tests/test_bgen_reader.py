@@ -16,3 +16,15 @@ def test_read_bgen_with_sample_file(shared_datadir):
     ds = read_bgen(path)
     # Check the sample IDs are the ones from the .sample file
     assert ds["sample/id"].values.tolist() == ["s0", "s1", "s2", "s3"]
+
+
+def test_read_bgen_with_no_samples(shared_datadir):
+    path = shared_datadir / "complex.23bits.no.samples.bgen"
+    ds = read_bgen(path)
+    # Check the sample IDs are generated
+    assert ds["sample/id"].values.tolist() == [
+        "sample_0",
+        "sample_1",
+        "sample_2",
+        "sample_3",
+    ]
