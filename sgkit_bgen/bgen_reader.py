@@ -1,6 +1,6 @@
 """BGEN reader implementation (using bgen_reader)"""
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 import dask.array as da
 import numpy as np
@@ -68,11 +68,21 @@ class BgenReader:
                     return alleles
 
                 def split(allele_row):
-                    return np.array(allele_row[0].split(",")[:2], dtype="S1")
+                    alleles_list = allele_row[0].split(",")
+                    assert len(alleles_list) == 2  # bi-allelic
+                    return np.array(alleles_list)
 
                 return np.apply_along_axis(split, 1, alleles[:, np.newaxis])
 
-            self.variant_alleles = variant_arrs["allele_ids"].map_blocks(split_alleles)
+            variant_alleles = variant_arrs["allele_ids"].map_blocks(split_alleles)
+
+            def max_str_len(arr: ArrayLike) -> Any:
+                return arr.map_blocks(
+                    lambda s: np.char.str_len(s.astype(str)), dtype=np.int8
+                ).max()
+
+            max_allele_length = max(max_str_len(variant_alleles).compute())
+            self.variant_alleles = variant_alleles.astype(f"S{max_allele_length}")
 
         with bgen_file(self.path) as bgen:
             sample_path = self.path.with_suffix(".sample")
