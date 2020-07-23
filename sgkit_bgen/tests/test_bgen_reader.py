@@ -1,12 +1,15 @@
 import numpy.testing as npt
+import pytest
 from sgkit_bgen import read_bgen
 
 
-def test_read_bgen(shared_datadir):
+@pytest.mark.parametrize("chunks", [(100, 200), (100, 500), (199, 500), "auto"])
+def test_read_bgen(shared_datadir, chunks):
     path = shared_datadir / "example.bgen"
-    ds = read_bgen(path, chunks=(100, 500))
+    ds = read_bgen(path, chunks=chunks)
 
     # check some of the data (in different chunks)
+    assert ds["call/dosage"].shape == (199, 500)
     npt.assert_almost_equal(ds["call/dosage"].values[1][0], 1.987, decimal=3)
     npt.assert_almost_equal(ds["call/dosage"].values[100][0], 0.160, decimal=3)
 
