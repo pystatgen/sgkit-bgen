@@ -131,7 +131,7 @@ def read_bgen(
     lock: bool = False,
     persist: bool = True,
 ) -> Dataset:
-    """Read BGEN dataset
+    """Read BGEN dataset.
 
     Loads a single BGEN dataset as dask arrays within a Dataset
     from a bgen file.
@@ -151,6 +151,10 @@ def read_bgen(
         memory, by default True.  This is an important performance
         consideration as the metadata file for this data will
         be read multiple times when False.
+
+    Warnings
+    --------
+    Only bi-allelic, diploid BGEN files are currently supported.
     """
 
     bgen_reader = BgenReader(path, persist)
