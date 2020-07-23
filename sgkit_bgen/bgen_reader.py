@@ -12,6 +12,7 @@ from bgen_reader._samples import generate_samples, read_samples_file
 from xarray import Dataset
 
 from sgkit import create_genotype_dosage_dataset
+from sgkit.typing import ArrayLike
 from sgkit.utils import encode_array
 
 PathType = Union[str, Path]
@@ -121,8 +122,14 @@ class BgenReader:
         with bgen_file(self.path) as bgen:
             genotypes = [bgen.read_genotype(vaddr) for vaddr in all_vaddr]
             all_probs = [genotype["probs"] for genotype in genotypes]
-            d = [(2 * probs[:, -1] + probs[:, 1]) for probs in all_probs]
+            d = [_to_dosage(probs) for probs in all_probs]
             return np.stack(d)[:, idx[1]]
+
+
+def _to_dosage(probs: ArrayLike):
+    """Calculate the dosage from genotype likelihoods (probabilities)"""
+    assert len(probs.shape) == 2 and probs.shape[1] == 3
+    return 2 * probs[:, -1] + probs[:, 1]
 
 
 def read_bgen(
