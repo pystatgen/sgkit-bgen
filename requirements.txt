@@ -1,0 +1,8 @@
+dask[array]
+dask[dataframe]
+fsspec
+numpy
+scipy
+xarray
+bgen_reader
+git+https://github.com/pystatgen/sgkit
