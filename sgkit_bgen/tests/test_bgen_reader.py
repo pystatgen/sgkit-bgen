@@ -9,9 +9,9 @@ def test_read_bgen(shared_datadir, chunks):
     ds = read_bgen(path, chunks=chunks)
 
     # check some of the data (in different chunks)
-    assert ds["call/dosage"].shape == (199, 500)
-    npt.assert_almost_equal(ds["call/dosage"].values[1][0], 1.987, decimal=3)
-    npt.assert_almost_equal(ds["call/dosage"].values[100][0], 0.160, decimal=3)
+    assert ds["call_dosage"].shape == (199, 500)
+    npt.assert_almost_equal(ds["call_dosage"].values[1][0], 1.987, decimal=3)
+    npt.assert_almost_equal(ds["call_dosage"].values[100][0], 0.160, decimal=3)
 
 
 def test_read_bgen_with_sample_file(shared_datadir):
@@ -21,7 +21,7 @@ def test_read_bgen_with_sample_file(shared_datadir):
     path = shared_datadir / "example-separate-samples.bgen"
     ds = read_bgen(path)
     # Check the sample IDs are the ones from the .sample file
-    assert ds["sample/id"].values.tolist() == ["s1", "s2", "s3", "s4", "s5"]
+    assert ds["sample_id"].values.tolist() == ["s1", "s2", "s3", "s4", "s5"]
 
 
 def test_read_bgen_with_no_samples(shared_datadir):
@@ -31,7 +31,7 @@ def test_read_bgen_with_no_samples(shared_datadir):
     path = shared_datadir / "example-no-samples.bgen"
     ds = read_bgen(path)
     # Check the sample IDs are generated
-    assert ds["sample/id"].values.tolist() == [
+    assert ds["sample_id"].values.tolist() == [
         "sample_0",
         "sample_1",
         "sample_2",
