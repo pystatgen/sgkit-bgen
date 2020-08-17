@@ -5,5 +5,5 @@ numpy
 scipy
 xarray
 zarr
-bgen_reader<=4.0.4
+bgen_reader>=4.0.5
 git+https://github.com/pystatgen/sgkit
