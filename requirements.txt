@@ -4,5 +4,6 @@ fsspec
 numpy
 scipy
 xarray
-bgen_reader
+zarr
+bgen_reader<=4.0.4
 git+https://github.com/pystatgen/sgkit
