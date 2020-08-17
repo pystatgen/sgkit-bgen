@@ -7,7 +7,7 @@ import numpy as np
 from bgen_reader._bgen_file import bgen_file
 from bgen_reader._bgen_metafile import bgen_metafile
 from bgen_reader._metafile import create_metafile
-from bgen_reader._reader import _infer_metafile_filepath
+from bgen_reader._reader import infer_metafile_filepath
 from bgen_reader._samples import generate_samples, read_samples_file
 from xarray import Dataset
 
@@ -45,7 +45,7 @@ class BgenReader:
     def __init__(self, path, persist=True, dtype=np.float32):
         self.path = Path(path)
 
-        self.metafile_filepath = _infer_metafile_filepath(Path(self.path))
+        self.metafile_filepath = infer_metafile_filepath(Path(self.path))
         if not self.metafile_filepath.exists():
             create_metafile(path, self.metafile_filepath, verbose=False)
 
