@@ -130,10 +130,14 @@ class BgenReader:
                 all_vaddr.extend(vaddr[start_offset:end_offset])
 
         with bgen_file(self.path) as bgen:
-            genotypes = [bgen.read_genotype(vaddr) for vaddr in all_vaddr]
-            all_probs = [genotype["probs"] for genotype in genotypes]
-            d = [_to_dosage(probs) for probs in all_probs]
-            return np.stack(d)[:, idx[1]]
+            res = None
+            for i, vaddr in enumerate(all_vaddr):
+                probs = bgen.read_genotype(vaddr)['probs'][idx[1]]
+                dosage = _to_dosage(probs)
+                if res is None:
+                    res = np.zeros((len(all_vaddr), len(dosage)), dtype=self.dtype)
+                res[i] = dosage
+            return res
 
 
 def _to_dosage(probs: ArrayLike):
