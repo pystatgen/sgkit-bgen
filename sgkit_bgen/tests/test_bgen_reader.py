@@ -1,8 +1,18 @@
+from pathlib import Path
+from typing import Any, Tuple
+
 import numpy as np
 import numpy.testing as npt
 import pytest
+import xarray as xr
 from sgkit_bgen import read_bgen
-from sgkit_bgen.bgen_reader import BgenReader
+from sgkit_bgen.bgen_reader import (
+    GT_DATA_VARS,
+    BgenReader,
+    rechunk_from_zarr,
+    rechunk_to_zarr,
+    unpack_variables,
+)
 
 CHUNKS = [
     (100, 200, 3),
@@ -61,7 +71,7 @@ def test_read_bgen(shared_datadir, chunks):
     )
 
 
-def test_read_bgen_with_sample_file(shared_datadir):
+def test_read_bgen__with_sample_file(shared_datadir):
     # The example file was generated using
     # qctool -g sgkit_bgen/tests/data/example.bgen -og sgkit_bgen/tests/data/example-separate-samples.bgen -os sgkit_bgen/tests/data/example-separate-samples.sample -incl-samples sgkit_bgen/tests/data/samples
     # Then editing example-separate-samples.sample to change the sample IDs
@@ -71,7 +81,7 @@ def test_read_bgen_with_sample_file(shared_datadir):
     assert ds["sample_id"].values.tolist() == ["s1", "s2", "s3", "s4", "s5"]
 
 
-def test_read_bgen_with_no_samples(shared_datadir):
+def test_read_bgen__with_no_samples(shared_datadir):
     # The example file was generated using
     # qctool -g sgkit_bgen/tests/data/example.bgen -og sgkit_bgen/tests/data/example-no-samples.bgen -os sgkit_bgen/tests/data/example-no-samples.sample -bgen-omit-sample-identifier-block -incl-samples sgkit_bgen/tests/data/samples
     # Then deleting example-no-samples.sample
@@ -88,7 +98,7 @@ def test_read_bgen_with_no_samples(shared_datadir):
 
 
 @pytest.mark.parametrize("chunks", CHUNKS)
-def test_read_bgen_fancy_index(shared_datadir, chunks):
+def test_read_bgen__fancy_index(shared_datadir, chunks):
     path = shared_datadir / "example.bgen"
     ds = read_bgen(path, chunks=chunks)
     npt.assert_almost_equal(
@@ -98,7 +108,7 @@ def test_read_bgen_fancy_index(shared_datadir, chunks):
 
 
 @pytest.mark.parametrize("chunks", CHUNKS)
-def test_read_bgen_scalar_index(shared_datadir, chunks):
+def test_read_bgen__scalar_index(shared_datadir, chunks):
     path = shared_datadir / "example.bgen"
     ds = read_bgen(path, chunks=chunks)
     for i, ix in enumerate(INDEXES):
@@ -116,7 +126,7 @@ def test_read_bgen_scalar_index(shared_datadir, chunks):
             )
 
 
-def test_read_bgen_raise_on_invalid_indexers(shared_datadir):
+def test_read_bgen__raise_on_invalid_indexers(shared_datadir):
     path = shared_datadir / "example.bgen"
     reader = BgenReader(path)
     with pytest.raises(IndexError, match="Indexer must be tuple"):
@@ -125,3 +135,110 @@ def test_read_bgen_raise_on_invalid_indexers(shared_datadir):
         reader[(slice(None),)]
     with pytest.raises(IndexError, match="Indexer must contain only slices or ints"):
         reader[([0], [0], [0])]
+
+
+def _rechunk_to_zarr(
+    shared_datadir: Path, tmp_path: Path, **kwargs: Any
+) -> Tuple[xr.Dataset, str]:
+    path = shared_datadir / "example.bgen"
+    ds = read_bgen(path, chunks=(10, -1, -1))
+    store = tmp_path / "example.zarr"
+    rechunk_to_zarr(ds, store, **kwargs)
+    return ds, str(store)
+
+
+def _open_zarr(store: str, **kwargs: Any) -> xr.Dataset:
+    # Force concat_characters False to avoid to avoid https://github.com/pydata/xarray/issues/4405
+    return xr.open_zarr(store, concat_characters=False, **kwargs)  # type: ignore[no-any-return,no-untyped-call]
+
+
+@pytest.mark.parametrize("chunk_width", [10, 50, 500])
+def test_rechunk_to_zarr__chunk_size(shared_datadir, tmp_path, chunk_width):
+    _, store = _rechunk_to_zarr(
+        shared_datadir, tmp_path, chunk_width=chunk_width, pack=False
+    )
+    dsr = _open_zarr(store)
+    for v in GT_DATA_VARS:
+        # Chunks shape should equal (
+        #   length of chunks on read,
+        #   width of chunks on rechunk
+        # )
+        assert dsr[v].data.chunksize[0] == 10
+        assert dsr[v].data.chunksize[1] == chunk_width
+
+
+@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
+def test_rechunk_to_zarr__probability_encoding(shared_datadir, tmp_path, dtype):
+    ds, store = _rechunk_to_zarr(
+        shared_datadir, tmp_path, probability_dtype=dtype, pack=False
+    )
+    dsr = _open_zarr(store, mask_and_scale=False)
+    v = "call_genotype_probability"
+    assert dsr[v].shape == ds[v].shape
+    assert dsr[v].dtype == dtype
+    dsr = _open_zarr(store, mask_and_scale=True)
+    # There are two missing calls which equates to
+    # 6 total nan values across 3 possible genotypes
+    assert np.isnan(dsr[v].values).sum() == 6
+    tolerance = 1.0 / (np.iinfo(dtype).max - 1)
+    np.testing.assert_allclose(ds[v], dsr[v], atol=tolerance)
+
+
+def test_rechunk_to_zarr__variable_packing(shared_datadir, tmp_path):
+    ds, store = _rechunk_to_zarr(
+        shared_datadir, tmp_path, probability_dtype=None, pack=True
+    )
+    dsr = _open_zarr(store, mask_and_scale=True)
+    dsr = unpack_variables(dsr)
+    # A minor tolerance is necessary here when packing is enabled
+    # because one of the genotype probabilities is constructed from the others
+    xr.testing.assert_allclose(ds.compute(), dsr.compute(), atol=1e-6)  # type: ignore[no-untyped-call]
+
+
+def test_rechunk_to_zarr__raise_on_invalid_chunk_length(shared_datadir, tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="Chunk size in variant dimension for variable .* must evenly divide target chunk size",
+    ):
+        _rechunk_to_zarr(shared_datadir, tmp_path, chunk_length=11)
+
+
+@pytest.mark.parametrize("chunks", [(10, 10), (50, 50), (100, 50), (50, 100)])
+def test_rechunk_from_zarr__target_chunks(shared_datadir, tmp_path, chunks):
+    ds, store = _rechunk_to_zarr(
+        shared_datadir,
+        tmp_path,
+        chunk_length=chunks[0],
+        chunk_width=chunks[1],
+        pack=False,
+    )
+    ds = rechunk_from_zarr(store, chunk_length=chunks[0], chunk_width=chunks[1])
+    for v in GT_DATA_VARS:
+        assert ds[v].data.chunksize[:2] == chunks
+
+
+@pytest.mark.parametrize("dtype", ["uint32", "int8", "float32"])
+def test_rechunk_from_zarr__invalid_probability_type(shared_datadir, tmp_path, dtype):
+    with pytest.raises(ValueError, match="Probability integer dtype invalid"):
+        _rechunk_to_zarr(shared_datadir, tmp_path, probability_dtype=dtype)
+
+
+def test_unpack_variables__invalid_gp_dims(shared_datadir, tmp_path):
+    # Validate that an error is thrown when variables are
+    # unpacked without being packed in the first place
+    _, store = _rechunk_to_zarr(shared_datadir, tmp_path, pack=False)
+    dsr = _open_zarr(store, mask_and_scale=True)
+    with pytest.raises(
+        ValueError,
+        match="Expecting variable 'call_genotype_probability' to have genotypes dimension of size 2",
+    ):
+        unpack_variables(dsr)
+
+
+def test_rechunk_from_zarr__self_consistent(shared_datadir, tmp_path):
+    # With no probability dtype or packing, rechunk_{to,from}_zarr is a noop
+    ds, store = _rechunk_to_zarr(
+        shared_datadir, tmp_path, probability_dtype=None, pack=False
+    )
+    dsr = rechunk_from_zarr(store)
+    xr.testing.assert_allclose(ds.compute(), dsr.compute())  # type: ignore[no-untyped-call]
