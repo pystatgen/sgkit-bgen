@@ -1,8 +1,9 @@
 """BGEN reader implementation (using bgen_reader)"""
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Dict, Tuple, Union
 
 import dask.array as da
+import dask.dataframe as dd
 import numpy as np
 from bgen_reader._bgen_file import bgen_file
 from bgen_reader._bgen_metafile import bgen_metafile
@@ -18,7 +19,7 @@ from sgkit.utils import encode_array
 PathType = Union[str, Path]
 
 
-def _to_dict(df, dtype=None):
+def _to_dict(df: dd.DataFrame, dtype: Any = None) -> Dict[str, da.Array]:
     return {
         c: df[c].to_dask_array(lengths=True).astype(dtype[c] if dtype else df[c].dtype)
         for c in df
@@ -42,7 +43,9 @@ class BgenReader:
 
     name = "bgen_reader"
 
-    def __init__(self, path, persist=True, dtype=np.float32):
+    def __init__(
+        self, path: PathType, persist: bool = True, dtype: Any = np.float32
+    ) -> None:
         self.path = Path(path)
 
         self.metafile_filepath = infer_metafile_filepath(Path(self.path))
@@ -63,11 +66,13 @@ class BgenReader:
             self.contig = variant_arrs["chrom"]
             self.pos = variant_arrs["pos"]
 
-            def split_alleles(alleles, block_info=None):
+            def split_alleles(
+                alleles: np.ndarray, block_info: Any = None
+            ) -> np.ndarray:
                 if block_info is None or len(block_info) == 0:
                     return alleles
 
-                def split(allele_row):
+                def split(allele_row: np.ndarray) -> np.ndarray:
                     alleles_list = allele_row[0].split(",")
                     assert len(alleles_list) == 2  # bi-allelic
                     return np.array(alleles_list)
@@ -98,7 +103,7 @@ class BgenReader:
         self.dtype = dtype
         self.ndim = 3
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: Any) -> np.ndarray:
         if not isinstance(idx, tuple):
             raise IndexError(f"Indexer must be tuple (received {type(idx)})")
         if len(idx) != self.ndim:
@@ -150,11 +155,11 @@ class BgenReader:
                 if res is None:
                     res = np.zeros((len(all_vaddr), len(probs), 3), dtype=self.dtype)
                 res[i] = probs
-            res = res[..., idx[2]]
+            res = res[..., idx[2]]  # type: ignore[index]
             return np.squeeze(res, axis=squeeze_dims)
 
 
-def _to_dosage(probs: ArrayLike):
+def _to_dosage(probs: ArrayLike) -> ArrayLike:
     """Calculate the dosage from genotype likelihoods (probabilities)"""
     assert (
         probs.shape[-1] == 3
@@ -164,7 +169,7 @@ def _to_dosage(probs: ArrayLike):
 
 def read_bgen(
     path: PathType,
-    chunks: Union[str, int, tuple] = "auto",
+    chunks: Union[str, int, Tuple[int, ...]] = "auto",
     lock: bool = False,
     persist: bool = True,
 ) -> Dataset:
@@ -217,7 +222,7 @@ def read_bgen(
     )
     call_dosage = _to_dosage(call_genotype_probability)
 
-    ds = create_genotype_dosage_dataset(
+    ds: Dataset = create_genotype_dosage_dataset(
         variant_contig_names=variant_contig_names,
         variant_contig=variant_contig,
         variant_position=variant_position,
