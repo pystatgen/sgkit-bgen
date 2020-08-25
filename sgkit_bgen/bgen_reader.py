@@ -100,15 +100,13 @@ class BgenReader:
 
     def __getitem__(self, idx):
         if not isinstance(idx, tuple):
-            raise IndexError(  # pragma: no cover
-                f"Indexer must be tuple (received {type(idx)})"
-            )
+            raise IndexError(f"Indexer must be tuple (received {type(idx)})")
         if len(idx) != self.ndim:
-            raise IndexError(  # pragma: no cover
-                f"Indexer must be two-item tuple (received {len(idx)} slices)"
+            raise IndexError(
+                f"Indexer must have {self.ndim} items (received {len(idx)} slices)"
             )
         if not all(isinstance(i, slice) or isinstance(i, int) for i in idx):
-            raise IndexError(  # pragma: no cover
+            raise IndexError(
                 f"Indexer must contain only slices or ints (received types {[type(i) for i in idx]})"
             )
         # Determine which dims should have unit size in result
