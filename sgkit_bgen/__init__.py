@@ -1,3 +1,3 @@
-from .bgen_reader import read_bgen, rechunk_from_zarr, rechunk_to_zarr  # noqa: F401
+from .bgen_reader import bgen_to_zarr, read_bgen, rechunk_bgen  # noqa: F401
 
-__all__ = ["read_bgen", "rechunk_from_zarr", "rechunk_to_zarr"]
+__all__ = ["read_bgen", "rechunk_bgen", "bgen_to_zarr"]

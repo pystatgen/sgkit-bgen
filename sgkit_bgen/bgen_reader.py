@@ -1,6 +1,7 @@
 """BGEN reader implementation (using bgen_reader)"""
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, Hashable, MutableMapping, Optional, Tuple, Union
+from typing import Any, Dict, Hashable, Mapping, MutableMapping, Optional, Tuple, Union
 
 import dask.array as da
 import dask.dataframe as dd
@@ -12,11 +13,11 @@ from bgen_reader._bgen_metafile import bgen_metafile
 from bgen_reader._metafile import create_metafile
 from bgen_reader._reader import infer_metafile_filepath
 from bgen_reader._samples import generate_samples, read_samples_file
+from rechunker import api as rechunker_api
 from xarray import Dataset
-from xarray.backends.zarr import ZarrStore
 
 from sgkit import create_genotype_dosage_dataset
-from sgkit.typing import ArrayLike
+from sgkit.typing import ArrayLike, DType
 from sgkit.utils import encode_array
 
 PathType = Union[str, Path]
@@ -241,6 +242,8 @@ def read_bgen(
 
 def encode_variables(
     ds: Dataset,
+    chunk_length: int,
+    chunk_width: int,
     compressor: Optional[Any] = zarr.Blosc(cname="zstd", clevel=7, shuffle=2),
     probability_dtype: Optional[Any] = "uint8",
 ) -> Dict[Hashable, Dict[str, Any]]:
@@ -249,6 +252,8 @@ def encode_variables(
         e = {}
         if compressor is not None:
             e.update({"compressor": compressor})
+        if v in GT_DATA_VARS:
+            e.update({"chunks": (chunk_length, chunk_width) + ds[v].shape[2:]})
         if probability_dtype is not None and v == "call_genotype_probability":
             dtype = np.dtype(probability_dtype)
             # Xarray will decode into float32 so any int greater than
@@ -287,16 +292,16 @@ def pack_variables(ds: Dataset) -> Dataset:
     return ds
 
 
-def unpack_variables(ds: Dataset, dtype: Any = "float32") -> Dataset:
+def unpack_variables(ds: Dataset, dtype: DType = "float32") -> Dataset:
     # Restore homozygous reference GP
-    gp = ds["call_genotype_probability"].astype(dtype)
+    gp = ds["call_genotype_probability"].astype(dtype)  # type: ignore[no-untyped-call]
     if gp.sizes["genotypes"] != 2:
         raise ValueError(
             "Expecting variable 'call_genotype_probability' to have genotypes "
             f"dimension of size 2 (received sizes = {dict(gp.sizes)})"
         )
     ds = ds.drop_vars("call_genotype_probability")
-    ds["call_genotype_probability"] = xr.concat(  # type: ignore[no-untyped-call]
+    ds["call_genotype_probability"] = xr.concat(
         [1 - gp.sum(dim="genotypes", skipna=False), gp], dim="genotypes"
     )
 
@@ -309,44 +314,78 @@ def unpack_variables(ds: Dataset, dtype: Any = "float32") -> Dataset:
     return ds
 
 
-def rechunk_to_zarr(
+def rechunk_bgen(
     ds: Dataset,
-    store: Union[PathType, MutableMapping[str, bytes]],
+    output: Union[PathType, MutableMapping[str, bytes]],
     *,
-    mode: str = "w",
     chunk_length: int = 10_000,
-    chunk_width: int = 10_000,
+    chunk_width: int = 1_000,
     compressor: Optional[Any] = zarr.Blosc(cname="zstd", clevel=7, shuffle=2),
-    probability_dtype: Optional[Any] = "uint8",
+    probability_dtype: Optional[DType] = "uint8",
+    max_mem: str = "4GB",
     pack: bool = True,
-    compute: bool = True,
-) -> ZarrStore:
+    tempdir: Optional[PathType] = None,
+) -> Dataset:
+    if isinstance(output, Path):
+        output = str(output)
+
+    chunk_length = min(chunk_length, ds.dims["variants"])
+    chunk_width = min(chunk_width, ds.dims["samples"])
+
     if pack:
         ds = pack_variables(ds)
-    for v in set(GT_DATA_VARS) & set(ds):
-        chunk_size = da.asarray(ds[v]).chunksize[0]
-        if chunk_length % chunk_size != 0:
-            raise ValueError(
-                f"Chunk size in variant dimension for variable '{v}' ({chunk_size}) "
-                f"must evenly divide target chunk size {chunk_length}"
-            )
-        ds[v] = ds[v].chunk(chunks=dict(samples=chunk_width))  # type: ignore[dict-item]
+
     encoding = encode_variables(
-        ds, compressor=compressor, probability_dtype=probability_dtype
+        ds,
+        chunk_length=chunk_length,
+        chunk_width=chunk_width,
+        compressor=compressor,
+        probability_dtype=probability_dtype,
     )
-    return ds.to_zarr(store, mode=mode, encoding=encoding or None, compute=compute)  # type: ignore[arg-type]
+    with tempfile.TemporaryDirectory(
+        prefix="bgen_to_zarr_", suffix=".zarr", dir=tempdir
+    ) as tmpdir:
+        rechunked = rechunker_api.rechunk_dataset(
+            ds,
+            encoding=encoding,
+            max_mem=max_mem,
+            target_store=output,
+            temp_store=tmpdir,
+            executor="dask",
+        )
+        rechunked.execute()
+
+    ds: Dataset = xr.open_zarr(output, concat_characters=False)  # type: ignore[no-untyped-call]
+    if pack:
+        ds = unpack_variables(ds)
+
+    return ds
 
 
-def rechunk_from_zarr(
-    store: Union[PathType, MutableMapping[str, bytes]],
+def bgen_to_zarr(
+    input: PathType,
+    output: Union[PathType, MutableMapping[str, bytes]],
+    region: Optional[Mapping[Hashable, Any]] = None,
     chunk_length: int = 10_000,
-    chunk_width: int = 10_000,
-    mask_and_scale: bool = True,
+    chunk_width: int = 1_000,
+    temp_chunk_length: int = 100,
+    compressor: Optional[Any] = zarr.Blosc(cname="zstd", clevel=7, shuffle=2),
+    probability_dtype: Optional[DType] = "uint8",
+    max_mem: str = "4GB",
+    pack: bool = True,
+    tempdir: Optional[PathType] = None,
 ) -> Dataset:
-    # Always use concat_characters=False to avoid https://github.com/pydata/xarray/issues/4405
-    ds = xr.open_zarr(store, mask_and_scale=mask_and_scale, concat_characters=False)  # type: ignore[no-untyped-call]
-    for v in set(GT_DATA_VARS) & set(ds):
-        ds[v] = ds[v].chunk(chunks=dict(variants=chunk_length, samples=chunk_width))
-        # Workaround for https://github.com/pydata/xarray/issues/4380
-        del ds[v].encoding["chunks"]
-    return ds  # type: ignore[no-any-return]
+    ds = read_bgen(input, chunks=(temp_chunk_length, -1, -1))
+    if region is not None:
+        ds = ds.isel(indexers=region)
+    return rechunk_bgen(
+        ds,
+        output,
+        chunk_length=chunk_length,
+        chunk_width=chunk_width,
+        compressor=compressor,
+        probability_dtype=probability_dtype,
+        max_mem=max_mem,
+        pack=pack,
+        tempdir=tempdir,
+    )

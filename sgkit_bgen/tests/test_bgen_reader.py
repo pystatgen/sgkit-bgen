@@ -9,8 +9,8 @@ from sgkit_bgen import read_bgen
 from sgkit_bgen.bgen_reader import (
     GT_DATA_VARS,
     BgenReader,
-    rechunk_from_zarr,
-    rechunk_to_zarr,
+    bgen_to_zarr,
+    rechunk_bgen,
     unpack_variables,
 )
 
@@ -44,6 +44,12 @@ EXPECTED_DOSAGES = np.array(
     [np.nan, 1.018, 0.010, 0.160, 0.991]  # Generated using bgen-reader directly
 )
 
+EXPECTED_DIMS = dict(variants=199, samples=500, genotypes=3, alleles=2)
+
+
+def _shape(*dims: str) -> Tuple[int, ...]:
+    return tuple(EXPECTED_DIMS[d] for d in dims)
+
 
 @pytest.mark.parametrize("chunks", CHUNKS)
 def test_read_bgen(shared_datadir, chunks):
@@ -51,12 +57,14 @@ def test_read_bgen(shared_datadir, chunks):
     ds = read_bgen(path, chunks=chunks)
 
     # check some of the data (in different chunks)
-    assert ds["call_dosage"].shape == (199, 500)
+    assert ds["call_dosage"].shape == _shape("variants", "samples")
     npt.assert_almost_equal(ds["call_dosage"].values[1][0], 1.987, decimal=3)
     npt.assert_almost_equal(ds["call_dosage"].values[100][0], 0.160, decimal=3)
     npt.assert_array_equal(ds["call_dosage_mask"].values[0, 0], [True])
     npt.assert_array_equal(ds["call_dosage_mask"].values[0, 1], [False])
-    assert ds["call_genotype_probability"].shape == (199, 500, 3)
+    assert ds["call_genotype_probability"].shape == _shape(
+        "variants", "samples", "genotypes"
+    )
     npt.assert_almost_equal(
         ds["call_genotype_probability"].values[1][0], [0.005, 0.002, 0.992], decimal=3
     )
@@ -137,14 +145,14 @@ def test_read_bgen__raise_on_invalid_indexers(shared_datadir):
         reader[([0], [0], [0])]
 
 
-def _rechunk_to_zarr(
+def _rechunk_bgen(
     shared_datadir: Path, tmp_path: Path, **kwargs: Any
-) -> Tuple[xr.Dataset, str]:
+) -> Tuple[xr.Dataset, xr.Dataset, str]:
     path = shared_datadir / "example.bgen"
     ds = read_bgen(path, chunks=(10, -1, -1))
     store = tmp_path / "example.zarr"
-    rechunk_to_zarr(ds, store, **kwargs)
-    return ds, str(store)
+    dsr = rechunk_bgen(ds, store, **kwargs)
+    return ds, dsr, str(store)
 
 
 def _open_zarr(store: str, **kwargs: Any) -> xr.Dataset:
@@ -152,24 +160,30 @@ def _open_zarr(store: str, **kwargs: Any) -> xr.Dataset:
     return xr.open_zarr(store, concat_characters=False, **kwargs)  # type: ignore[no-any-return,no-untyped-call]
 
 
-@pytest.mark.parametrize("chunk_width", [10, 50, 500])
-def test_rechunk_to_zarr__chunk_size(shared_datadir, tmp_path, chunk_width):
-    _, store = _rechunk_to_zarr(
-        shared_datadir, tmp_path, chunk_width=chunk_width, pack=False
+@pytest.mark.parametrize("target_chunks", [(10, 10), (50, 50), (100, 50), (50, 100)])
+def test_rechunk_bgen__target_chunks(shared_datadir, tmp_path, target_chunks):
+    _, dsr, store = _rechunk_bgen(
+        shared_datadir,
+        tmp_path,
+        chunk_length=target_chunks[0],
+        chunk_width=target_chunks[1],
+        pack=False,
     )
-    dsr = _open_zarr(store)
     for v in GT_DATA_VARS:
-        # Chunks shape should equal (
-        #   length of chunks on read,
-        #   width of chunks on rechunk
-        # )
-        assert dsr[v].data.chunksize[0] == 10
-        assert dsr[v].data.chunksize[1] == chunk_width
+        assert dsr[v].data.chunksize[:2] == target_chunks
+
+
+def test_rechunk_from_zarr__self_consistent(shared_datadir, tmp_path):
+    # With no probability dtype or packing, rechunk_{to,from}_zarr is a noop
+    ds, dsr, store = _rechunk_bgen(
+        shared_datadir, tmp_path, probability_dtype=None, pack=False
+    )
+    xr.testing.assert_allclose(ds.compute(), dsr.compute())  # type: ignore[no-untyped-call]
 
 
 @pytest.mark.parametrize("dtype", ["uint8", "uint16"])
-def test_rechunk_to_zarr__probability_encoding(shared_datadir, tmp_path, dtype):
-    ds, store = _rechunk_to_zarr(
+def test_rechunk_bgen__probability_encoding(shared_datadir, tmp_path, dtype):
+    ds, _, store = _rechunk_bgen(
         shared_datadir, tmp_path, probability_dtype=dtype, pack=False
     )
     dsr = _open_zarr(store, mask_and_scale=False)
@@ -184,50 +198,25 @@ def test_rechunk_to_zarr__probability_encoding(shared_datadir, tmp_path, dtype):
     np.testing.assert_allclose(ds[v], dsr[v], atol=tolerance)
 
 
-def test_rechunk_to_zarr__variable_packing(shared_datadir, tmp_path):
-    ds, store = _rechunk_to_zarr(
+def test_rechunk_bgen__variable_packing(shared_datadir, tmp_path):
+    ds, dsr, store = _rechunk_bgen(
         shared_datadir, tmp_path, probability_dtype=None, pack=True
     )
-    dsr = _open_zarr(store, mask_and_scale=True)
-    dsr = unpack_variables(dsr)
     # A minor tolerance is necessary here when packing is enabled
     # because one of the genotype probabilities is constructed from the others
     xr.testing.assert_allclose(ds.compute(), dsr.compute(), atol=1e-6)  # type: ignore[no-untyped-call]
 
 
-def test_rechunk_to_zarr__raise_on_invalid_chunk_length(shared_datadir, tmp_path):
-    with pytest.raises(
-        ValueError,
-        match="Chunk size in variant dimension for variable .* must evenly divide target chunk size",
-    ):
-        _rechunk_to_zarr(shared_datadir, tmp_path, chunk_length=11)
-
-
-@pytest.mark.parametrize("chunks", [(10, 10), (50, 50), (100, 50), (50, 100)])
-def test_rechunk_from_zarr__target_chunks(shared_datadir, tmp_path, chunks):
-    ds, store = _rechunk_to_zarr(
-        shared_datadir,
-        tmp_path,
-        chunk_length=chunks[0],
-        chunk_width=chunks[1],
-        pack=False,
-    )
-    ds = rechunk_from_zarr(store, chunk_length=chunks[0], chunk_width=chunks[1])
-    for v in GT_DATA_VARS:
-        assert ds[v].data.chunksize[:2] == chunks
-
-
 @pytest.mark.parametrize("dtype", ["uint32", "int8", "float32"])
-def test_rechunk_from_zarr__invalid_probability_type(shared_datadir, tmp_path, dtype):
+def test_rechunk_bgen__invalid_probability_type(shared_datadir, tmp_path, dtype):
     with pytest.raises(ValueError, match="Probability integer dtype invalid"):
-        _rechunk_to_zarr(shared_datadir, tmp_path, probability_dtype=dtype)
+        _rechunk_bgen(shared_datadir, tmp_path, probability_dtype=dtype)
 
 
 def test_unpack_variables__invalid_gp_dims(shared_datadir, tmp_path):
     # Validate that an error is thrown when variables are
     # unpacked without being packed in the first place
-    _, store = _rechunk_to_zarr(shared_datadir, tmp_path, pack=False)
-    dsr = _open_zarr(store, mask_and_scale=True)
+    _, dsr, store = _rechunk_bgen(shared_datadir, tmp_path, pack=False)
     with pytest.raises(
         ValueError,
         match="Expecting variable 'call_genotype_probability' to have genotypes dimension of size 2",
@@ -235,10 +224,18 @@ def test_unpack_variables__invalid_gp_dims(shared_datadir, tmp_path):
         unpack_variables(dsr)
 
 
-def test_rechunk_from_zarr__self_consistent(shared_datadir, tmp_path):
-    # With no probability dtype or packing, rechunk_{to,from}_zarr is a noop
-    ds, store = _rechunk_to_zarr(
-        shared_datadir, tmp_path, probability_dtype=None, pack=False
-    )
-    dsr = rechunk_from_zarr(store)
-    xr.testing.assert_allclose(ds.compute(), dsr.compute())  # type: ignore[no-untyped-call]
+@pytest.mark.parametrize(
+    "region", [None, dict(variants=slice(0, 100)), dict(samples=slice(0, 50))]
+)
+def test_bgen_to_zarr(shared_datadir, tmp_path, region):
+    input = shared_datadir / "example.bgen"
+    output = tmp_path / "example.zarr"
+    ds = bgen_to_zarr(input, output, region=region)
+    expected_dims = {
+        k: EXPECTED_DIMS[k]
+        if region is None or k not in region
+        else region[k].stop - region[k].start
+        for k in EXPECTED_DIMS
+    }
+    actual_dims = {k: v for k, v in ds.dims.items() if k in expected_dims}
+    assert actual_dims == expected_dims
