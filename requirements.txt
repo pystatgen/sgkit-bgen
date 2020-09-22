@@ -5,6 +5,6 @@ numpy
 scipy
 xarray
 zarr
-bgen_reader>=4.0.5
+bgen_reader==4.0.5
 git+https://github.com/pystatgen/sgkit
 git+https://github.com/eric-czech/rechunker.git
