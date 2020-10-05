@@ -13,12 +13,13 @@ from bgen_reader._bgen_metafile import bgen_metafile
 from bgen_reader._metafile import create_metafile
 from bgen_reader._reader import infer_metafile_filepath
 from bgen_reader._samples import generate_samples, read_samples_file
-from rechunker import api as rechunker_api
 from xarray import Dataset
 
 from sgkit import create_genotype_dosage_dataset
 from sgkit.typing import ArrayLike, DType
 from sgkit.utils import encode_array
+
+from .rechunker_api import rechunk_dataset  # type: ignore[attr-defined]
 
 PathType = Union[str, Path]
 
@@ -398,7 +399,7 @@ def rechunk_bgen(
     with tempfile.TemporaryDirectory(
         prefix="bgen_to_zarr_", suffix=".zarr", dir=tempdir
     ) as tmpdir:
-        rechunked = rechunker_api.rechunk_dataset(
+        rechunked = rechunk_dataset(
             ds,
             encoding=encoding,
             max_mem=max_mem,
